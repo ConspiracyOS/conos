@@ -3,16 +3,14 @@
 `conos` is the user-facing CLI for managing ConspiracyOS instances.
 It talks to `conctl` inside the container or VM over SSH.
 
-> **Status: work in progress.** The interface below is the target design.
-
 ## Commands
 
 ```bash
 conos start                          # boot the instance
-conos stop [--force]                 # stop with confirmation prompt
+conos stop [--force]                 # stop the instance (--force skips confirmation)
 conos status                         # show agent status
 
-conos config apply                   # apply config from .conos/ to the instance
+conos config apply                   # push .conos/conos.toml to the instance
 
 conos agent list                     # list agents and their state
 conos agent kill <name>              # stop a running agent
@@ -21,45 +19,61 @@ conos agent task <name> <task>       # send a task to a named agent's inbox
 conos agent <task>                   # send a task to concierge (shorthand)
 ```
 
-Reserved agent names (cannot be used): `list`, `kill`, `logs`, `task`
+Reserved agent names (cannot be used as `conos agent <task>`): `list`, `kill`, `logs`, `task`
 
 ## Configuration
 
-`conos` looks for instance config in order:
+`conos` looks for config in order:
 
-1. `$PWD/.conos/conos.toml`
-2. `~/.conos/conos.toml`
+1. `.conos/conos.toml` (project-local)
+2. `~/.conos/conos.toml` (user-global)
+
+Minimal config:
 
 ```toml
 [instance]
-host = "conos"   # SSH hostname or alias — see ~/.ssh/config for ProxyJump etc.
+host = "conos"   # SSH hostname or alias from ~/.ssh/config
+```
+
+Full config with container management:
+
+```toml
+[instance]
+host = "conos"         # SSH host alias
+
+[container]
+runtime = "docker"     # docker | podman | container (default: docker)
+name    = "conos"      # container name (default: conos)
+image   = "conos"      # image to start (default: conos)
+env_file = "container.env"  # optional: env file passed to runtime on start
 ```
 
 Complex SSH options (ProxyJump, IdentityFile, port) belong in `~/.ssh/config`,
 not here. `conos` just runs `ssh <host> conctl <args>`.
 
-### Container mode
+### Apple Container / local container
 
 ```
+# ~/.ssh/config
 Host conos
-  HostName 192.168.64.80
+  HostName 192.168.64.80   # container IP (find with: container list)
   User root
   IdentityFile ~/.ssh/id_ed25519
 ```
 
-### VM / VPS mode (loopback)
+### VPS / remote server
 
 ```toml
+# .conos/conos.toml
 [instance]
-host = "localhost"
+host = "my-vps"   # alias defined in ~/.ssh/config
 ```
 
 ## How it works
 
 `conos` is a thin SSH wrapper around `conctl`. Every operational command
 executes `ssh <host> conctl <equivalent>` on the inner system.
-Instance management commands (`start`, `stop`) invoke the container runtime
-or VM management API on the local host.
+`start` and `stop` invoke the local container runtime directly.
 
 ## Build
 
