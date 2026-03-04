@@ -148,6 +148,66 @@ func TestResponseTracker(t *testing.T) {
 	}
 }
 
+func TestRedactSecrets_APIKeyPatterns(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			"openrouter key",
+			"here is my key: sk-or-v1-abcdefghijklmnopqrstuvwxyz12345678",
+			"here is my key: [REDACTED]",
+		},
+		{
+			"anthropic key",
+			"key=sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
+			"key=[REDACTED]",
+		},
+		{
+			"openai key",
+			"OPENAI_KEY=sk-projABCDEFGHIJKLMNOPQRSTUVWXYZ12345678",
+			"OPENAI_KEY=[REDACTED]",
+		},
+		{
+			"tailscale key",
+			"auth: tskey-auth-abcdefghijk-ABCDEFGHIJK",
+			"auth: [REDACTED]",
+		},
+		{
+			"no secrets",
+			"just a normal response",
+			"just a normal response",
+		},
+	}
+	for _, tt := range tests {
+		got := redactSecrets(tt.input, nil)
+		if got != tt.want {
+			t.Errorf("%s: redactSecrets(%q) = %q, want %q", tt.name, tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestRedactSecrets_LiteralValues(t *testing.T) {
+	token := "my-secret-bot-token.xyz.abc"
+	input := "token appeared in output: my-secret-bot-token.xyz.abc end"
+	got := redactSecrets(input, []string{token})
+	if strings.Contains(got, token) {
+		t.Errorf("literal secret not redacted: %q", got)
+	}
+	if !strings.Contains(got, "[REDACTED]") {
+		t.Errorf("expected [REDACTED] in output, got: %q", got)
+	}
+}
+
+func TestRedactSecrets_EmptyLiterals(t *testing.T) {
+	// Empty literal must not panic or corrupt output.
+	got := redactSecrets("hello", []string{""})
+	if got != "hello" {
+		t.Errorf("expected 'hello', got %q", got)
+	}
+}
+
 func TestShellEscape(t *testing.T) {
 	// Verify the escaping pattern used in the message handler
 	input := "it's a test"

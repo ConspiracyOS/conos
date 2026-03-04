@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -551,6 +552,7 @@ func pollResponses(dg *discordgo.Session, cfg Config, exec Executor, tracker *re
 
 // sendResponse posts a message to the appropriate Discord destination.
 func sendResponse(dg *discordgo.Session, cfg Config, dms *dmChannels, content string) {
+	content = redactSecrets(content, []string{cfg.BotToken})
 	chunks := splitMessage(content, 2000)
 
 	if cfg.ChannelID != "" {
@@ -612,4 +614,25 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// secretPatterns matches API key formats that must not be forwarded to Discord.
+var secretPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`sk-[A-Za-z0-9\-]{20,}`),    // OpenRouter / OpenAI / Anthropic sk- keys
+	regexp.MustCompile(`tskey-[A-Za-z0-9\-]{10,}`), // Tailscale auth keys
+}
+
+// redactSecrets replaces recognised secret patterns and any provided literal
+// values in s with "[REDACTED]". literalSecrets is typically the bot token
+// or other config values that must not echo back to the channel.
+func redactSecrets(s string, literalSecrets []string) string {
+	for _, re := range secretPatterns {
+		s = re.ReplaceAllString(s, "[REDACTED]")
+	}
+	for _, secret := range literalSecrets {
+		if secret != "" {
+			s = strings.ReplaceAll(s, secret, "[REDACTED]")
+		}
+	}
+	return s
 }
