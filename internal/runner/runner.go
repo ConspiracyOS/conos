@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// Runner executes commands on the ConspirancyOS instance.
+// Runner executes commands on the ConspiracyOS instance.
 type Runner interface {
 	// Exec runs a command and captures combined output.
 	Exec(cmd string) (string, error)

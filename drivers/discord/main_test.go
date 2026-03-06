@@ -267,7 +267,7 @@ func TestArtifactPattern(t *testing.T) {
 func TestResolveArtifactLinks_Success(t *testing.T) {
 	mock := &MockExecutor{
 		Responses: map[string]string{
-			"conctl artifact link --base-url https://example.com art_0123456789abcdef": `{"url":"https://example.com/a/art_0123456789abcdef?sig=abc","expires_at":"2026-03-07T00:00:00Z"}`,
+			"conctl artifact link --base-url 'https://example.com' art_0123456789abcdef": `{"url":"https://example.com/a/art_0123456789abcdef?sig=abc","expires_at":"2026-03-07T00:00:00Z"}`,
 		},
 	}
 	input := "check artifact:art_0123456789abcdef for the report"
@@ -281,7 +281,7 @@ func TestResolveArtifactLinks_Success(t *testing.T) {
 func TestResolveArtifactLinks_PathWithFilename(t *testing.T) {
 	mock := &MockExecutor{
 		Responses: map[string]string{
-			"conctl artifact link --base-url https://example.com art_abcdef0123456789": `{"url":"https://example.com/a/art_abcdef0123456789?sig=xyz","expires_at":"2026-03-07T00:00:00Z"}`,
+			"conctl artifact link --base-url 'https://example.com' art_abcdef0123456789": `{"url":"https://example.com/a/art_abcdef0123456789?sig=xyz","expires_at":"2026-03-07T00:00:00Z"}`,
 		},
 	}
 	input := "wrote to /artifacts/art_abcdef0123456789/report.md"
@@ -296,7 +296,7 @@ func TestResolveArtifactLinks_Failure(t *testing.T) {
 	mock := &MockExecutor{
 		Responses: map[string]string{},
 		Errors: map[string]error{
-			"conctl artifact link --base-url https://example.com art_0000000000000000": fmt.Errorf("not found"),
+			"conctl artifact link --base-url 'https://example.com' art_0000000000000000": fmt.Errorf("not found"),
 		},
 	}
 	input := "check artifact:art_0000000000000000 please"
@@ -320,7 +320,7 @@ func TestResolveArtifactLinks_NoMatches(t *testing.T) {
 func TestResolveArtifactLinks_DuplicateIDs(t *testing.T) {
 	mock := &MockExecutor{
 		Responses: map[string]string{
-			"conctl artifact link --base-url https://example.com art_1111111111111111": `{"url":"https://example.com/a/art_1111111111111111?sig=s","expires_at":"2026-03-07T00:00:00Z"}`,
+			"conctl artifact link --base-url 'https://example.com' art_1111111111111111": `{"url":"https://example.com/a/art_1111111111111111?sig=s","expires_at":"2026-03-07T00:00:00Z"}`,
 		},
 	}
 	input := "artifact:art_1111111111111111 and again artifact:art_1111111111111111"
@@ -344,7 +344,7 @@ func TestResolveArtifactLinks_DuplicateIDs(t *testing.T) {
 func TestResolveArtifactLinks_InvalidJSON(t *testing.T) {
 	mock := &MockExecutor{
 		Responses: map[string]string{
-			"conctl artifact link --base-url https://example.com art_2222222222222222": `not json`,
+			"conctl artifact link --base-url 'https://example.com' art_2222222222222222": `not json`,
 		},
 	}
 	input := "artifact:art_2222222222222222"

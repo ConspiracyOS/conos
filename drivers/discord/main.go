@@ -93,6 +93,9 @@ func loadConfig() Config {
 	if cfg.SSHKey == "" {
 		cfg.SSHKey = os.ExpandEnv("$HOME/.ssh/id_ed25519")
 	}
+	if strings.ContainsRune(cfg.BaseURL, '\'') {
+		log.Fatalf("CONOS_BASE_URL contains invalid character (single quote)")
+	}
 	return cfg
 }
 
@@ -108,7 +111,7 @@ type SSHExecutor struct {
 
 func (e *SSHExecutor) Run(cmd string) (string, error) {
 	args := []string{
-		"-o", "StrictHostKeyChecking=no",
+		"-o", "StrictHostKeyChecking=accept-new",
 		"-o", "BatchMode=yes",
 		"-i", e.Config.SSHKey,
 		"-p", e.Config.SSHPort,
@@ -136,6 +139,9 @@ func (rt *responseTracker) isNew(path string) bool {
 		return false
 	}
 	rt.seen[path] = true
+	if len(rt.seen) > 10000 {
+		rt.seen = make(map[string]bool)
+	}
 	return true
 }
 
@@ -386,6 +392,7 @@ func handleStatus(s *discordgo.Session, i *discordgo.InteractionCreate, exec Exe
 }
 
 func handleClear(s *discordgo.Session, i *discordgo.InteractionCreate, exec Executor) {
+	// TODO: replace with `conctl clear-sessions` once that subcommand exists
 	out, err := exec.Run("rm -f /srv/conos/agents/concierge/workspace/sessions/*.json")
 	if err != nil {
 		respond(s, i, fmt.Sprintf("Failed to clear session: %v\n%s", err, out))
@@ -409,7 +416,7 @@ func handleLogs(s *discordgo.Session, i *discordgo.InteractionCreate, exec Execu
 		count = 100
 	}
 
-	cmd := fmt.Sprintf("tail -n %d /srv/conos/logs/audit/*.log 2>/dev/null", count)
+	cmd := fmt.Sprintf("conctl logs -n %d", count)
 	out, err := exec.Run(cmd)
 	if err != nil || out == "" {
 		respond(s, i, "No audit log entries found.")
@@ -431,25 +438,9 @@ func handleResponses(s *discordgo.Session, i *discordgo.InteractionCreate, exec 
 	respond(s, i, out)
 }
 
-func handleHistory(s *discordgo.Session, i *discordgo.InteractionCreate, exec Executor, opts []*discordgo.ApplicationCommandInteractionDataOption) {
-	count := 5
-	for _, opt := range opts {
-		if opt.Name == "count" {
-			count = int(opt.IntValue())
-		}
-	}
-	if count < 1 {
-		count = 1
-	}
-	if count > 20 {
-		count = 20
-	}
-
-	cmd := fmt.Sprintf(
-		`ls -t /srv/conos/agents/*/outbox/*.response 2>/dev/null | head -%d | while read f; do agent=$(echo "$f" | awk -F/ '{print $5}'); echo "**${agent}** ($(basename "$f"))"; cat "$f"; echo; echo "---"; done`,
-		count,
-	)
-	out, err := exec.Run(cmd)
+func handleHistory(s *discordgo.Session, i *discordgo.InteractionCreate, exec Executor, _ []*discordgo.ApplicationCommandInteractionDataOption) {
+	// count option ignored — conctl responses shows latest from each agent
+	out, err := exec.Run("conctl responses")
 	if err != nil || out == "" {
 		respond(s, i, "No response history found.")
 		return
@@ -616,7 +607,7 @@ func resolveArtifactLinks(text string, baseURL string, exec Executor) string {
 			continue
 		}
 
-		cmd := fmt.Sprintf("conctl artifact link --base-url %s %s", baseURL, artID)
+		cmd := fmt.Sprintf("conctl artifact link --base-url '%s' %s", baseURL, artID)
 		out, err := exec.Run(cmd)
 		if err != nil {
 			log.Printf("artifact link %s failed: %v", artID, err)
