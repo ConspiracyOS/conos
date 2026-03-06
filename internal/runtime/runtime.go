@@ -14,15 +14,40 @@ type ContainerConfig struct {
 	EnvFile string // path to env file (empty = omit)
 }
 
+func needsSystemdFlags(runtime string) bool {
+	return runtime == "docker" || runtime == "podman"
+}
+
 // BuildStartArgs returns the argument list for the start command.
 // Exported for testing.
 func BuildStartArgs(cfg ContainerConfig) []string {
 	args := []string{cfg.Runtime, "run", "-d", "--name", cfg.Name}
+	if needsSystemdFlags(cfg.Runtime) {
+		args = append(args,
+			"--privileged",
+			"--cgroupns=host",
+			"-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
+			"--restart", "unless-stopped",
+		)
+	}
 	if cfg.EnvFile != "" {
 		args = append(args, "--env-file", cfg.EnvFile)
 	}
 	args = append(args, cfg.Image)
 	return args
+}
+
+// Pull pulls the configured container image.
+func Pull(cfg ContainerConfig) error {
+	cmd := exec.Command(cfg.Runtime, "pull", cfg.Image)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// RemoveIfExists force-removes any existing container with the same name.
+func RemoveIfExists(cfg ContainerConfig) {
+	_ = exec.Command(cfg.Runtime, "rm", "-f", cfg.Name).Run()
 }
 
 // Start boots the container.

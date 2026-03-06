@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -56,16 +57,26 @@ type Config struct {
 	SSHPort   string
 	SSHUser   string
 	SSHKey    string
+	BaseURL   string // for artifact link minting
+}
+
+// envWithFallback reads the new CONOS_SSH_* var first, falling back to the old CON_SSH_* name.
+func envWithFallback(newKey, oldKey string) string {
+	if v := os.Getenv(newKey); v != "" {
+		return v
+	}
+	return os.Getenv(oldKey)
 }
 
 func loadConfig() Config {
 	cfg := Config{
 		BotToken:  os.Getenv("DISCORD_BOT_TOKEN"),
 		ChannelID: os.Getenv("DISCORD_CHANNEL_ID"),
-		SSHHost:   os.Getenv("CON_SSH_HOST"),
-		SSHPort:   os.Getenv("CON_SSH_PORT"),
-		SSHUser:   os.Getenv("CON_SSH_USER"),
-		SSHKey:    os.Getenv("CON_SSH_KEY"),
+		SSHHost:   envWithFallback("CONOS_SSH_HOST", "CON_SSH_HOST"),
+		SSHPort:   envWithFallback("CONOS_SSH_PORT", "CON_SSH_PORT"),
+		SSHUser:   envWithFallback("CONOS_SSH_USER", "CON_SSH_USER"),
+		SSHKey:    envWithFallback("CONOS_SSH_KEY", "CON_SSH_KEY"),
+		BaseURL:   os.Getenv("CONOS_BASE_URL"),
 	}
 	if cfg.BotToken == "" {
 		log.Fatal("DISCORD_BOT_TOKEN is required")
@@ -270,7 +281,7 @@ func main() {
 
 		// Escape single quotes for shell
 		escaped := strings.ReplaceAll(message, "'", "'\\''")
-		cmd := fmt.Sprintf("con task '%s'", escaped)
+		cmd := fmt.Sprintf("conctl task '%s'", escaped)
 
 		_, err := exec.Run(cmd)
 		if err != nil {
@@ -366,7 +377,7 @@ func respond(s *discordgo.Session, i *discordgo.InteractionCreate, content strin
 }
 
 func handleStatus(s *discordgo.Session, i *discordgo.InteractionCreate, exec Executor) {
-	out, err := exec.Run("con status")
+	out, err := exec.Run("conctl status")
 	if err != nil {
 		respond(s, i, fmt.Sprintf("SSH failed: %v\n%s", err, out))
 		return
@@ -375,7 +386,7 @@ func handleStatus(s *discordgo.Session, i *discordgo.InteractionCreate, exec Exe
 }
 
 func handleClear(s *discordgo.Session, i *discordgo.InteractionCreate, exec Executor) {
-	out, err := exec.Run("rm -f /srv/con/agents/concierge/workspace/sessions/*.json")
+	out, err := exec.Run("rm -f /srv/conos/agents/concierge/workspace/sessions/*.json")
 	if err != nil {
 		respond(s, i, fmt.Sprintf("Failed to clear session: %v\n%s", err, out))
 		return
@@ -398,7 +409,7 @@ func handleLogs(s *discordgo.Session, i *discordgo.InteractionCreate, exec Execu
 		count = 100
 	}
 
-	cmd := fmt.Sprintf("tail -n %d /srv/con/logs/audit/*.log 2>/dev/null", count)
+	cmd := fmt.Sprintf("tail -n %d /srv/conos/logs/audit/*.log 2>/dev/null", count)
 	out, err := exec.Run(cmd)
 	if err != nil || out == "" {
 		respond(s, i, "No audit log entries found.")
@@ -408,7 +419,7 @@ func handleLogs(s *discordgo.Session, i *discordgo.InteractionCreate, exec Execu
 }
 
 func handleResponses(s *discordgo.Session, i *discordgo.InteractionCreate, exec Executor) {
-	out, err := exec.Run("con responses")
+	out, err := exec.Run("conctl responses")
 	if err != nil {
 		respond(s, i, fmt.Sprintf("SSH failed: %v\n%s", err, out))
 		return
@@ -435,7 +446,7 @@ func handleHistory(s *discordgo.Session, i *discordgo.InteractionCreate, exec Ex
 	}
 
 	cmd := fmt.Sprintf(
-		`ls -t /srv/con/agents/*/outbox/*.response 2>/dev/null | head -%d | while read f; do agent=$(echo "$f" | awk -F/ '{print $5}'); echo "**${agent}** ($(basename "$f"))"; cat "$f"; echo; echo "---"; done`,
+		`ls -t /srv/conos/agents/*/outbox/*.response 2>/dev/null | head -%d | while read f; do agent=$(echo "$f" | awk -F/ '{print $5}'); echo "**${agent}** ($(basename "$f"))"; cat "$f"; echo; echo "---"; done`,
 		count,
 	)
 	out, err := exec.Run(cmd)
@@ -456,7 +467,7 @@ func handleDebug(s *discordgo.Session, i *discordgo.InteractionCreate, cfg Confi
 
 	// Test SSH connectivity
 	sshStatus := "connected"
-	statusOut, err := exec.Run("con status")
+	statusOut, err := exec.Run("conctl status")
 	if err != nil {
 		sshStatus = fmt.Sprintf("FAILED: %v", err)
 		statusOut = ""
@@ -501,7 +512,7 @@ func interactionUser(i *discordgo.InteractionCreate) string {
 
 // seedResponses marks all existing response files as seen so we don't replay history.
 func seedResponses(exec Executor, tracker *responseTracker) {
-	out, err := exec.Run("ls /srv/con/agents/*/outbox/*.response 2>/dev/null")
+	out, err := exec.Run("ls /srv/conos/agents/*/outbox/*.response 2>/dev/null")
 	if err != nil || out == "" {
 		return
 	}
@@ -519,7 +530,7 @@ func pollResponses(dg *discordgo.Session, cfg Config, exec Executor, tracker *re
 	for {
 		time.Sleep(5 * time.Second)
 
-		out, err := exec.Run("ls /srv/con/agents/*/outbox/*.response 2>/dev/null")
+		out, err := exec.Run("ls /srv/conos/agents/*/outbox/*.response 2>/dev/null")
 		if err != nil || out == "" {
 			continue
 		}
@@ -530,7 +541,7 @@ func pollResponses(dg *discordgo.Session, cfg Config, exec Executor, tracker *re
 				continue
 			}
 
-			// Extract agent name from path: /srv/con/agents/<name>/outbox/...
+			// Extract agent name from path: /srv/conos/agents/<name>/outbox/...
 			agent := agentFromPath(path)
 
 			content, err := exec.Run(fmt.Sprintf("cat '%s'", path))
@@ -543,6 +554,9 @@ func pollResponses(dg *discordgo.Session, cfg Config, exec Executor, tracker *re
 				continue
 			}
 
+			if cfg.BaseURL != "" {
+				content = resolveArtifactLinks(content, cfg.BaseURL, exec)
+			}
 			header := fmt.Sprintf("**%s:**\n", agent)
 			sendResponse(dg, cfg, dms, header+content)
 			log.Printf("posted response from %s (%d chars)", agent, len(content))
@@ -573,6 +587,66 @@ func sendResponse(dg *discordgo.Session, cfg Config, dms *dmChannels, content st
 	}
 }
 
+// --- Artifact resolution ---
+
+// artifactPattern matches artifact references in response text.
+// Matches: artifact:art_<hex>, /artifacts/art_<hex>/<filename>
+var artifactPattern = regexp.MustCompile(`(?:artifact:|/artifacts/)(art_[0-9a-f]{16})(?:/([A-Za-z0-9._-]+))?`)
+
+// artifactLinkResponse is the JSON shape returned by `conctl artifact link`.
+type artifactLinkResponse struct {
+	URL       string `json:"url"`
+	ExpiresAt string `json:"expires_at"`
+}
+
+// resolveArtifactLinks finds artifact references in text and replaces them
+// with signed URLs by calling `conctl artifact link <id>` via SSH.
+func resolveArtifactLinks(text string, baseURL string, exec Executor) string {
+	matches := artifactPattern.FindAllStringSubmatchIndex(text, -1)
+	if len(matches) == 0 {
+		return text
+	}
+
+	// Deduplicate: resolve each unique artifact ID once
+	resolved := make(map[string]string) // artifactID -> signed URL
+
+	for _, match := range matches {
+		artID := text[match[2]:match[3]]
+		if _, ok := resolved[artID]; ok {
+			continue
+		}
+
+		cmd := fmt.Sprintf("conctl artifact link --base-url %s %s", baseURL, artID)
+		out, err := exec.Run(cmd)
+		if err != nil {
+			log.Printf("artifact link %s failed: %v", artID, err)
+			resolved[artID] = "" // mark as failed, leave original
+			continue
+		}
+
+		var resp artifactLinkResponse
+		if err := json.Unmarshal([]byte(out), &resp); err != nil {
+			log.Printf("artifact link %s: invalid JSON: %v", artID, err)
+			resolved[artID] = ""
+			continue
+		}
+		resolved[artID] = resp.URL
+	}
+
+	// Replace matches in reverse order to preserve indices
+	for i := len(matches) - 1; i >= 0; i-- {
+		match := matches[i]
+		artID := text[match[2]:match[3]]
+		url := resolved[artID]
+		if url == "" {
+			continue // leave original text unchanged on failure
+		}
+		text = text[:match[0]] + url + text[match[1]:]
+	}
+
+	return text
+}
+
 // --- Helpers ---
 
 // splitMessage splits content into chunks that fit Discord's 2000 char limit.
@@ -598,7 +672,7 @@ func splitMessage(content string, limit int) []string {
 	return chunks
 }
 
-// agentFromPath extracts agent name from /srv/con/agents/<name>/outbox/...
+// agentFromPath extracts agent name from /srv/conos/agents/<name>/outbox/...
 func agentFromPath(path string) string {
 	parts := strings.Split(path, "/")
 	for i, p := range parts {

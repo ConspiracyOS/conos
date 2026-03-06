@@ -4,13 +4,16 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/ConspiracyOS/conos/internal/commands"
 	"github.com/ConspiracyOS/conos/internal/config"
-	rt "github.com/ConspiracyOS/conos/internal/runtime"
 	"github.com/ConspiracyOS/conos/internal/runner"
+	rt "github.com/ConspiracyOS/conos/internal/runtime"
 )
+
+const defaultImage = "ghcr.io/conspiracyos/conos:latest"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -18,6 +21,8 @@ func main() {
 		os.Exit(1)
 	}
 	switch os.Args[1] {
+	case "install":
+		cmdInstall(os.Args[2:])
 	case "start":
 		cmdStart()
 	case "stop":
@@ -44,16 +49,81 @@ func mustLoadConfig() *config.Config {
 	return cfg
 }
 
-func cmdStart() {
-	cfg := mustLoadConfig()
-	c := rt.ContainerConfig{
-		Runtime: cfg.Container.Runtime,
-		Name:    cfg.Container.Name,
-		Image:   cfg.Container.Image,
-		EnvFile: cfg.Container.EnvFile,
+func loadContainerConfigOrDefault() config.Container {
+	c, err := config.LoadContainer()
+	if err != nil {
+		fatalf("config: %v\n", err)
 	}
-	fmt.Printf("Starting %s...\n", c.Name)
-	if err := rt.Start(c); err != nil {
+	return c
+}
+
+func cmdInstall(args []string) {
+	fs := flag.NewFlagSet("install", flag.ExitOnError)
+	runtimeFlag := fs.String("runtime", "docker", "container runtime: docker|podman|container")
+	nameFlag := fs.String("name", "conos", "container name")
+	imageFlag := fs.String("image", defaultImage, "container image")
+	envFileFlag := fs.String("env-file", filepath.Join(os.Getenv("HOME"), ".conos", "container.env"), "runtime env file")
+	fs.Parse(args)
+
+	if err := ensureInstallEnvFile(*envFileFlag); err != nil {
+		fatalf("install failed: %v\n", err)
+	}
+
+	cfg := rt.ContainerConfig{
+		Runtime: *runtimeFlag,
+		Name:    *nameFlag,
+		Image:   *imageFlag,
+		EnvFile: *envFileFlag,
+	}
+
+	fmt.Printf("Pulling image %s...\n", cfg.Image)
+	if err := rt.Pull(cfg); err != nil {
+		fatalf("install failed: image pull failed: %v\n", err)
+	}
+
+	fmt.Printf("Replacing container %s if it exists...\n", cfg.Name)
+	rt.RemoveIfExists(cfg)
+
+	fmt.Printf("Starting %s...\n", cfg.Name)
+	if err := rt.Start(cfg); err != nil {
+		fatalf("install failed: start failed: %v\n", err)
+	}
+
+	fmt.Println("Install complete.")
+	fmt.Printf("Next: docker exec %s conctl status\n", cfg.Name)
+}
+
+func ensureInstallEnvFile(path string) error {
+	_, err := os.Stat(path)
+	if err == nil {
+		return nil
+	}
+	if !os.IsNotExist(err) {
+		return err
+	}
+
+	apiKey := strings.TrimSpace(os.Getenv("CONOS_OPENROUTER_API_KEY"))
+	if apiKey == "" {
+		return fmt.Errorf("%s not found and CONOS_OPENROUTER_API_KEY is empty", path)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	content := "CONOS_OPENROUTER_API_KEY=" + apiKey + "\n"
+	return os.WriteFile(path, []byte(content), 0o600)
+}
+
+func cmdStart() {
+	containerCfg := loadContainerConfigOrDefault()
+	cfg := rt.ContainerConfig{
+		Runtime: containerCfg.Runtime,
+		Name:    containerCfg.Name,
+		Image:   containerCfg.Image,
+		EnvFile: containerCfg.EnvFile,
+	}
+	fmt.Printf("Starting %s...\n", cfg.Name)
+	if err := rt.Start(cfg); err != nil {
 		fatalf("start failed: %v\n", err)
 	}
 }
@@ -65,12 +135,12 @@ func cmdStop() {
 			force = true
 		}
 	}
-	cfg := mustLoadConfig()
-	c := rt.ContainerConfig{
-		Runtime: cfg.Container.Runtime,
-		Name:    cfg.Container.Name,
+	containerCfg := loadContainerConfigOrDefault()
+	cfg := rt.ContainerConfig{
+		Runtime: containerCfg.Runtime,
+		Name:    containerCfg.Name,
 	}
-	if err := rt.Stop(c, force); err != nil {
+	if err := rt.Stop(cfg, force); err != nil {
 		fatalf("stop failed: %v\n", err)
 	}
 }
@@ -155,6 +225,8 @@ func usage() {
 	fmt.Fprint(os.Stderr, `conos — ConspiracyOS outer CLI
 
 Usage:
+  conos install [--runtime docker] [--name conos] [--image ghcr.io/conspiracyos/conos:latest]
+                                         install + start locally (creates ~/.conos/container.env if missing)
   conos start                           boot the instance
   conos stop [--force]                  stop the instance
   conos status                          show agent status

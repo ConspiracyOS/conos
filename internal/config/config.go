@@ -8,6 +8,8 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+const defaultImage = "ghcr.io/conspiracyos/conos:latest"
+
 // Config is the conos project config loaded from .conos/conos.toml.
 type Config struct {
 	Instance  Instance  `toml:"instance"`
@@ -23,17 +25,30 @@ type Instance struct {
 type Container struct {
 	Runtime string `toml:"runtime"`  // docker | podman | container (default: docker)
 	Name    string `toml:"name"`     // container name (default: conos)
-	Image   string `toml:"image"`    // image name (default: conos)
+	Image   string `toml:"image"`    // image name (default: ghcr.io/conspiracyos/conos:latest)
 	EnvFile string `toml:"env_file"` // path to env file (optional)
+}
+
+func searchPaths() []string {
+	return []string{
+		".conos/conos.toml",
+		filepath.Join(os.Getenv("HOME"), ".conos", "conos.toml"),
+	}
+}
+
+func defaultConfig() *Config {
+	return &Config{
+		Container: Container{
+			Runtime: "docker",
+			Name:    "conos",
+			Image:   defaultImage,
+		},
+	}
 }
 
 // Load finds and loads the config file. Searches .conos/conos.toml then ~/.conos/conos.toml.
 func Load() (*Config, error) {
-	paths := []string{
-		".conos/conos.toml",
-		filepath.Join(os.Getenv("HOME"), ".conos", "conos.toml"),
-	}
-	for _, p := range paths {
+	for _, p := range searchPaths() {
 		if _, err := os.Stat(p); err == nil {
 			return LoadFile(p)
 		}
@@ -41,15 +56,23 @@ func Load() (*Config, error) {
 	return nil, fmt.Errorf("no config found; create .conos/conos.toml with:\n\n[instance]\nhost = \"<ssh-host-alias>\"\n")
 }
 
+// LoadContainer loads only container settings. If no config file exists, defaults are returned.
+func LoadContainer() (Container, error) {
+	for _, p := range searchPaths() {
+		if _, err := os.Stat(p); err == nil {
+			cfg := defaultConfig()
+			if _, err := toml.DecodeFile(p, cfg); err != nil {
+				return Container{}, fmt.Errorf("loading %s: %w", p, err)
+			}
+			return cfg.Container, nil
+		}
+	}
+	return defaultConfig().Container, nil
+}
+
 // LoadFile loads config from an explicit path.
 func LoadFile(path string) (*Config, error) {
-	cfg := &Config{
-		Container: Container{
-			Runtime: "docker",
-			Name:    "conos",
-			Image:   "conos",
-		},
-	}
+	cfg := defaultConfig()
 	if _, err := toml.DecodeFile(path, cfg); err != nil {
 		return nil, fmt.Errorf("loading %s: %w", path, err)
 	}

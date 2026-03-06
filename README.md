@@ -6,6 +6,7 @@ It talks to `conctl` inside the container or VM over SSH.
 ## Commands
 
 ```bash
+conos install                        # pull image + create env file + start local container
 conos start                          # boot the instance
 conos stop [--force]                 # stop the instance (--force skips confirmation)
 conos status                         # show agent status
@@ -20,6 +21,20 @@ conos agent <task>                   # send a task to concierge (shorthand)
 ```
 
 Reserved agent names (cannot be used as `conos agent <task>`): `list`, `kill`, `logs`, `task`
+
+## Zero-to-one local install
+
+The fastest path is a single command with one required env var:
+
+```bash
+CONOS_OPENROUTER_API_KEY=sk-or-your-key conos install
+```
+
+What `conos install` does:
+
+- Pulls `ghcr.io/conspiracyos/conos:latest`
+- Creates `~/.conos/container.env` if missing
+- Starts container `conos` with required systemd runtime flags (Docker/Podman)
 
 ## Configuration
 
@@ -44,7 +59,7 @@ host = "conos"         # SSH host alias
 [container]
 runtime = "docker"     # docker | podman | container (default: docker)
 name    = "conos"      # container name (default: conos)
-image   = "conos"      # image to start (default: conos)
+image   = "ghcr.io/conspiracyos/conos:latest"  # image to start
 env_file = "container.env"  # optional: env file passed to runtime on start
 ```
 

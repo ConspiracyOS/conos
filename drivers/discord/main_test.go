@@ -78,9 +78,9 @@ func TestAgentFromPath(t *testing.T) {
 		path string
 		want string
 	}{
-		{"/srv/con/agents/concierge/outbox/001.response", "concierge"},
-		{"/srv/con/agents/sysadmin/outbox/002.response", "sysadmin"},
-		{"/srv/con/agents/researcher/outbox/file.response", "researcher"},
+		{"/srv/conos/agents/concierge/outbox/001.response", "concierge"},
+		{"/srv/conos/agents/sysadmin/outbox/002.response", "sysadmin"},
+		{"/srv/conos/agents/researcher/outbox/file.response", "researcher"},
 		{"/some/other/path", "unknown"},
 		{"", "unknown"},
 	}
@@ -104,7 +104,7 @@ func TestTruncate(t *testing.T) {
 func TestSeedResponses(t *testing.T) {
 	mock := &MockExecutor{
 		Responses: map[string]string{
-			"ls /srv/con/agents/*/outbox/*.response 2>/dev/null": "/srv/con/agents/concierge/outbox/001.response\n/srv/con/agents/sysadmin/outbox/002.response",
+			"ls /srv/conos/agents/*/outbox/*.response 2>/dev/null": "/srv/conos/agents/concierge/outbox/001.response\n/srv/conos/agents/sysadmin/outbox/002.response",
 		},
 	}
 	tracker := newResponseTracker()
@@ -115,7 +115,7 @@ func TestSeedResponses(t *testing.T) {
 		t.Errorf("expected 2 seeded responses, got %d", tracker.count())
 	}
 	// These should now be marked as seen
-	if tracker.isNew("/srv/con/agents/concierge/outbox/001.response") {
+	if tracker.isNew("/srv/conos/agents/concierge/outbox/001.response") {
 		t.Error("001.response should have been seeded as seen")
 	}
 }
@@ -123,7 +123,7 @@ func TestSeedResponses(t *testing.T) {
 func TestSeedResponses_Empty(t *testing.T) {
 	mock := &MockExecutor{
 		Responses: map[string]string{},
-		Errors:    map[string]error{"ls /srv/con/agents/*/outbox/*.response 2>/dev/null": fmt.Errorf("no matches")},
+		Errors:    map[string]error{"ls /srv/conos/agents/*/outbox/*.response 2>/dev/null": fmt.Errorf("no matches")},
 	}
 	tracker := newResponseTracker()
 
@@ -212,9 +212,144 @@ func TestShellEscape(t *testing.T) {
 	// Verify the escaping pattern used in the message handler
 	input := "it's a test"
 	escaped := strings.ReplaceAll(input, "'", "'\\''")
-	cmd := fmt.Sprintf("con task '%s'", escaped)
-	expected := "con task 'it'\\''s a test'"
+	cmd := fmt.Sprintf("conctl task '%s'", escaped)
+	expected := "conctl task 'it'\\''s a test'"
 	if cmd != expected {
 		t.Errorf("expected %q, got %q", expected, cmd)
+	}
+}
+
+func TestArtifactPattern(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		ids   []string
+	}{
+		{
+			"artifact colon reference",
+			"see artifact:art_0123456789abcdef for details",
+			[]string{"art_0123456789abcdef"},
+		},
+		{
+			"artifact path with filename",
+			"wrote to /artifacts/art_abcdef0123456789/report.md",
+			[]string{"art_abcdef0123456789"},
+		},
+		{
+			"multiple references",
+			"artifact:art_0000000000000001 and /artifacts/art_0000000000000002/data.csv",
+			[]string{"art_0000000000000001", "art_0000000000000002"},
+		},
+		{
+			"no match",
+			"just a normal response with no artifacts",
+			nil,
+		},
+	}
+	for _, tt := range tests {
+		matches := artifactPattern.FindAllStringSubmatch(tt.input, -1)
+		var ids []string
+		for _, m := range matches {
+			ids = append(ids, m[1])
+		}
+		if len(ids) != len(tt.ids) {
+			t.Errorf("%s: expected %d matches, got %d", tt.name, len(tt.ids), len(ids))
+			continue
+		}
+		for i, id := range ids {
+			if id != tt.ids[i] {
+				t.Errorf("%s: match[%d] = %q, want %q", tt.name, i, id, tt.ids[i])
+			}
+		}
+	}
+}
+
+func TestResolveArtifactLinks_Success(t *testing.T) {
+	mock := &MockExecutor{
+		Responses: map[string]string{
+			"conctl artifact link --base-url https://example.com art_0123456789abcdef": `{"url":"https://example.com/a/art_0123456789abcdef?sig=abc","expires_at":"2026-03-07T00:00:00Z"}`,
+		},
+	}
+	input := "check artifact:art_0123456789abcdef for the report"
+	got := resolveArtifactLinks(input, "https://example.com", mock)
+	expected := "check https://example.com/a/art_0123456789abcdef?sig=abc for the report"
+	if got != expected {
+		t.Errorf("expected %q, got %q", expected, got)
+	}
+}
+
+func TestResolveArtifactLinks_PathWithFilename(t *testing.T) {
+	mock := &MockExecutor{
+		Responses: map[string]string{
+			"conctl artifact link --base-url https://example.com art_abcdef0123456789": `{"url":"https://example.com/a/art_abcdef0123456789?sig=xyz","expires_at":"2026-03-07T00:00:00Z"}`,
+		},
+	}
+	input := "wrote to /artifacts/art_abcdef0123456789/report.md"
+	got := resolveArtifactLinks(input, "https://example.com", mock)
+	expected := "wrote to https://example.com/a/art_abcdef0123456789?sig=xyz"
+	if got != expected {
+		t.Errorf("expected %q, got %q", expected, got)
+	}
+}
+
+func TestResolveArtifactLinks_Failure(t *testing.T) {
+	mock := &MockExecutor{
+		Responses: map[string]string{},
+		Errors: map[string]error{
+			"conctl artifact link --base-url https://example.com art_0000000000000000": fmt.Errorf("not found"),
+		},
+	}
+	input := "check artifact:art_0000000000000000 please"
+	got := resolveArtifactLinks(input, "https://example.com", mock)
+	if got != input {
+		t.Errorf("expected original text on failure, got %q", got)
+	}
+}
+
+func TestResolveArtifactLinks_NoMatches(t *testing.T) {
+	mock := &MockExecutor{
+		Responses: map[string]string{},
+	}
+	input := "no artifacts here"
+	got := resolveArtifactLinks(input, "https://example.com", mock)
+	if got != input {
+		t.Errorf("expected unchanged text, got %q", got)
+	}
+}
+
+func TestResolveArtifactLinks_DuplicateIDs(t *testing.T) {
+	mock := &MockExecutor{
+		Responses: map[string]string{
+			"conctl artifact link --base-url https://example.com art_1111111111111111": `{"url":"https://example.com/a/art_1111111111111111?sig=s","expires_at":"2026-03-07T00:00:00Z"}`,
+		},
+	}
+	input := "artifact:art_1111111111111111 and again artifact:art_1111111111111111"
+	got := resolveArtifactLinks(input, "https://example.com", mock)
+	expected := "https://example.com/a/art_1111111111111111?sig=s and again https://example.com/a/art_1111111111111111?sig=s"
+	if got != expected {
+		t.Errorf("expected %q, got %q", expected, got)
+	}
+	// Should only call SSH once for the duplicate ID
+	callCount := 0
+	for _, c := range mock.Calls {
+		if strings.Contains(c, "artifact link") {
+			callCount++
+		}
+	}
+	if callCount != 1 {
+		t.Errorf("expected 1 SSH call for duplicate ID, got %d", callCount)
+	}
+}
+
+func TestResolveArtifactLinks_InvalidJSON(t *testing.T) {
+	mock := &MockExecutor{
+		Responses: map[string]string{
+			"conctl artifact link --base-url https://example.com art_2222222222222222": `not json`,
+		},
+	}
+	input := "artifact:art_2222222222222222"
+	got := resolveArtifactLinks(input, "https://example.com", mock)
+	if got != input {
+		t.Errorf("expected original text on invalid JSON, got %q", got)
 	}
 }
