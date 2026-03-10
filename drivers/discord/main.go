@@ -392,13 +392,12 @@ func handleStatus(s *discordgo.Session, i *discordgo.InteractionCreate, exec Exe
 }
 
 func handleClear(s *discordgo.Session, i *discordgo.InteractionCreate, exec Executor) {
-	// TODO: replace with `conctl clear-sessions` once that subcommand exists
-	out, err := exec.Run("rm -f /srv/conos/agents/concierge/workspace/sessions/*.json")
+	out, err := exec.Run("conctl clear-sessions concierge")
 	if err != nil {
 		respond(s, i, fmt.Sprintf("Failed to clear session: %v\n%s", err, out))
 		return
 	}
-	respond(s, i, "Concierge session cleared.")
+	respond(s, i, fmt.Sprintf("Session cleared: %s", strings.TrimSpace(out)))
 	log.Printf("session cleared by %s", interactionUser(i))
 }
 
