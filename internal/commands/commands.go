@@ -92,7 +92,13 @@ func BuildScpArgs(host, localPath string) []string {
 
 // ConfigApply copies the local conos.toml to the instance and runs bootstrap.
 func ConfigApply(host, localPath string) error {
-	// Step 1: scp
+	// Step 1: clear immutable bit so scp can overwrite
+	unlock := exec.Command("ssh", host, "chattr -i /etc/conos/conos.toml 2>/dev/null; true")
+	unlock.Stdout = os.Stdout
+	unlock.Stderr = os.Stderr
+	_ = unlock.Run() // best-effort: may not have chattr or immutable support
+
+	// Step 2: scp
 	scpArgs := BuildScpArgs(host, localPath)
 	scp := exec.Command(scpArgs[0], scpArgs[1:]...)
 	scp.Stdout = os.Stdout
@@ -100,7 +106,8 @@ func ConfigApply(host, localPath string) error {
 	if err := scp.Run(); err != nil {
 		return fmt.Errorf("scp failed: %w", err)
 	}
-	// Step 2: conctl bootstrap
+
+	// Step 3: conctl bootstrap (re-applies immutable bit as its last step)
 	bootstrap := exec.Command("ssh", host, "conctl bootstrap")
 	bootstrap.Stdout = os.Stdout
 	bootstrap.Stderr = os.Stderr
