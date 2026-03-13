@@ -24,17 +24,24 @@ Reserved agent names (cannot be used as `conos agent <task>`): `list`, `kill`, `
 
 ## Zero-to-one local install
 
-The fastest path is a single command with one required env var:
-
 ```bash
-CONOS_API_KEY=sk-or-your-key conos install
+conos install
 ```
 
-What `conos install` does:
+The install wizard auto-detects your container runtime (Docker/Podman), prompts for
+an API key (optional — can be added later), and sets up everything:
 
 - Pulls `ghcr.io/conspiracyos/conos:latest`
-- Creates `~/.conos/container.env` if missing
-- Starts container `conos` with required systemd runtime flags (Docker/Podman)
+- Creates `~/.conos/container.env` (with API key if provided, placeholder otherwise)
+- Generates `~/.conos/conos.toml`
+- Configures `~/.ssh/config` with a `conos` host entry
+- Starts container `conos` with required systemd runtime flags
+
+All settings can be overridden via flags for non-interactive (CI/agent) use:
+
+```bash
+conos install --runtime podman --api-key sk-or-your-key --ssh-port 3333
+```
 
 ## Configuration
 
