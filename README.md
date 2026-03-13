@@ -27,7 +27,7 @@ Reserved agent names (cannot be used as `conos agent <task>`): `list`, `kill`, `
 The fastest path is a single command with one required env var:
 
 ```bash
-CONOS_OPENROUTER_API_KEY=sk-or-your-key conos install
+CONOS_API_KEY=sk-or-your-key conos install
 ```
 
 What `conos install` does:

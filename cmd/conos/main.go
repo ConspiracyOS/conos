@@ -59,23 +59,35 @@ func loadContainerConfigOrDefault() config.Container {
 
 func cmdInstall(args []string) {
 	fs := flag.NewFlagSet("install", flag.ExitOnError)
-	runtimeFlag := fs.String("runtime", "docker", "container runtime: docker|podman|container")
-	nameFlag := fs.String("name", "conos", "container name")
-	imageFlag := fs.String("image", defaultImage, "container image")
-	envFileFlag := fs.String("env-file", filepath.Join(os.Getenv("HOME"), ".conos", "container.env"), "runtime env file")
-	sshPortFlag := fs.Int("ssh-port", rt.DefaultSSHPort, "host port for SSH access")
+	runtimeFlag := fs.String("runtime", "", "container runtime: docker|podman")
+	nameFlag := fs.String("name", "", "container name")
+	imageFlag := fs.String("image", "", "container image")
+	envFileFlag := fs.String("env-file", "", "runtime env file path")
+	sshPortFlag := fs.Int("ssh-port", 0, "host port for SSH access")
+	apiKeyFlag := fs.String("api-key", "", "LLM API key (avoids interactive prompt)")
 	fs.Parse(args)
 
-	if err := ensureInstallEnvFile(*envFileFlag); err != nil {
-		fatalf("install failed: %v\n", err)
-	}
-
-	cfg := rt.ContainerConfig{
+	// Run the wizard — interactive if TTY, silent otherwise.
+	// Flags override wizard prompts.
+	wiz := NewWizard(nil, nil)
+	opts := wiz.Run(InstallOpts{
 		Runtime: *runtimeFlag,
 		Name:    *nameFlag,
 		Image:   *imageFlag,
 		EnvFile: *envFileFlag,
 		SSHPort: *sshPortFlag,
+		APIKey:  *apiKeyFlag,
+	})
+
+	// Write env file
+	writeEnvFile(opts.EnvFile, opts.APIKey)
+
+	cfg := rt.ContainerConfig{
+		Runtime: opts.Runtime,
+		Name:    opts.Name,
+		Image:   opts.Image,
+		EnvFile: opts.EnvFile,
+		SSHPort: opts.SSHPort,
 	}
 
 	// 1. Pull image
@@ -109,7 +121,15 @@ func cmdInstall(args []string) {
 	}
 
 	fmt.Println()
-	fmt.Println("Install complete. Try:")
+	fmt.Println("Install complete.")
+	if opts.APIKey == "" {
+		fmt.Println()
+		fmt.Println("  Agents won't be able to think until you add an API key:")
+		fmt.Println("    echo 'CONOS_API_KEY=sk-your-key' >>", cfg.EnvFile)
+		fmt.Println("    conos stop --force && conos start")
+	}
+	fmt.Println()
+	fmt.Println("Try:")
 	fmt.Println("  conos status")
 	fmt.Println("  conos agent \"What agents are running?\"")
 }
@@ -182,25 +202,22 @@ Host %s
 	return nil
 }
 
-func ensureInstallEnvFile(path string) error {
-	_, err := os.Stat(path)
-	if err == nil {
-		return nil
-	}
-	if !os.IsNotExist(err) {
-		return err
-	}
-
-	apiKey := strings.TrimSpace(os.Getenv("CONOS_OPENROUTER_API_KEY"))
-	if apiKey == "" {
-		return fmt.Errorf("%s not found and CONOS_OPENROUTER_API_KEY is empty", path)
+func writeEnvFile(path string, apiKey string) {
+	if _, err := os.Stat(path); err == nil {
+		return // already exists
 	}
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
+		return
 	}
-	content := "CONOS_OPENROUTER_API_KEY=" + apiKey + "\n"
-	return os.WriteFile(path, []byte(content), 0o600)
+
+	if apiKey != "" {
+		content := "CONOS_API_KEY=" + apiKey + "\n"
+		_ = os.WriteFile(path, []byte(content), 0o600)
+	} else {
+		// Create empty env file so docker --env-file doesn't error
+		_ = os.WriteFile(path, []byte("# Set your LLM API key:\n# CONOS_API_KEY=sk-your-key-here\n"), 0o600)
+	}
 }
 
 func cmdStart() {
