@@ -63,6 +63,7 @@ func cmdInstall(args []string) {
 	nameFlag := fs.String("name", "conos", "container name")
 	imageFlag := fs.String("image", defaultImage, "container image")
 	envFileFlag := fs.String("env-file", filepath.Join(os.Getenv("HOME"), ".conos", "container.env"), "runtime env file")
+	sshPortFlag := fs.Int("ssh-port", rt.DefaultSSHPort, "host port for SSH access")
 	fs.Parse(args)
 
 	if err := ensureInstallEnvFile(*envFileFlag); err != nil {
@@ -74,13 +75,16 @@ func cmdInstall(args []string) {
 		Name:    *nameFlag,
 		Image:   *imageFlag,
 		EnvFile: *envFileFlag,
+		SSHPort: *sshPortFlag,
 	}
 
+	// 1. Pull image
 	fmt.Printf("Pulling image %s...\n", cfg.Image)
 	if err := rt.Pull(cfg); err != nil {
 		fatalf("install failed: image pull failed: %v\n", err)
 	}
 
+	// 2. Start container
 	fmt.Printf("Replacing container %s if it exists...\n", cfg.Name)
 	rt.RemoveIfExists(cfg)
 
@@ -89,8 +93,93 @@ func cmdInstall(args []string) {
 		fatalf("install failed: start failed: %v\n", err)
 	}
 
-	fmt.Println("Install complete.")
-	fmt.Printf("Next: docker exec %s conctl status\n", cfg.Name)
+	// 3. Inject SSH key
+	fmt.Println("Configuring SSH access...")
+	if err := rt.InjectSSHKey(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: SSH setup failed: %v\n", err)
+		fmt.Fprintln(os.Stderr, "You can manually copy your SSH key later with:")
+		fmt.Fprintf(os.Stderr, "  docker exec %s bash -c 'mkdir -p /root/.ssh && cat >> /root/.ssh/authorized_keys' < ~/.ssh/id_ed25519.pub\n", cfg.Name)
+	} else {
+		fmt.Println("SSH key injected.")
+	}
+
+	// 4. Generate config
+	if err := generateConfig(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: config generation failed: %v\n", err)
+	}
+
+	fmt.Println()
+	fmt.Println("Install complete. Try:")
+	fmt.Println("  conos status")
+	fmt.Println("  conos agent \"What agents are running?\"")
+}
+
+func generateConfig(cfg rt.ContainerConfig) error {
+	home := os.Getenv("HOME")
+	configDir := filepath.Join(home, ".conos")
+	configPath := filepath.Join(configDir, "conos.toml")
+
+	// Don't overwrite existing config
+	if _, err := os.Stat(configPath); err == nil {
+		return nil
+	}
+
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		return err
+	}
+
+	content := fmt.Sprintf(`[instance]
+host = "conos"
+
+[container]
+runtime = %q
+name = %q
+image = %q
+env_file = %q
+`, cfg.Runtime, cfg.Name, cfg.Image, cfg.EnvFile)
+
+	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
+		return err
+	}
+
+	fmt.Printf("Config written to %s\n", configPath)
+
+	// Also set up SSH config entry if it doesn't exist
+	return ensureSSHConfig(cfg)
+}
+
+func ensureSSHConfig(cfg rt.ContainerConfig) error {
+	home := os.Getenv("HOME")
+	sshConfigPath := filepath.Join(home, ".ssh", "config")
+
+	// Check if "Host conos" already exists
+	existing, err := os.ReadFile(sshConfigPath)
+	if err == nil && strings.Contains(string(existing), "Host "+cfg.Name) {
+		return nil
+	}
+
+	entry := fmt.Sprintf(`
+# ConspiracyOS (added by conos install)
+Host %s
+  HostName 127.0.0.1
+  Port %d
+  User root
+  StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null
+  LogLevel ERROR
+`, cfg.Name, cfg.SSHPort)
+
+	f, err := os.OpenFile(sshConfigPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("writing SSH config: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(entry); err != nil {
+		return err
+	}
+
+	fmt.Printf("SSH config entry added for host %q (port %d)\n", cfg.Name, cfg.SSHPort)
+	return nil
 }
 
 func ensureInstallEnvFile(path string) error {

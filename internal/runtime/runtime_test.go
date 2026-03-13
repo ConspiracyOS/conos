@@ -12,9 +12,9 @@ func TestBuildStartArgs(t *testing.T) {
 		Name:    "conos",
 		Image:   "conos",
 		EnvFile: "srv/dev/container.env",
+		SSHPort: 2222,
 	}
 	args := runtime.BuildStartArgs(cfg)
-	// Expected: docker run -d --name conos --privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw --restart unless-stopped --env-file srv/dev/container.env conos
 	if args[0] != "docker" {
 		t.Fatalf("expected docker, got %q", args[0])
 	}
@@ -30,6 +30,11 @@ func TestBuildStartArgs(t *testing.T) {
 	envIdx := indexOf(args, "--env-file")
 	if envIdx == -1 || args[envIdx+1] != "srv/dev/container.env" {
 		t.Fatalf("expected --env-file srv/dev/container.env in args: %v", args)
+	}
+	// Port mapping
+	pIdx := indexOf(args, "-p")
+	if pIdx == -1 || args[pIdx+1] != "2222:22" {
+		t.Fatalf("expected -p 2222:22 in args: %v", args)
 	}
 }
 

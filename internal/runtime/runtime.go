@@ -12,6 +12,7 @@ type ContainerConfig struct {
 	Name    string // container name
 	Image   string // image name
 	EnvFile string // path to env file (empty = omit)
+	SSHPort int    // host port to map to container port 22 (default: 2222)
 }
 
 func needsSystemdFlags(runtime string) bool {
@@ -28,6 +29,7 @@ func BuildStartArgs(cfg ContainerConfig) []string {
 			"--cgroupns=host",
 			"-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
 			"--restart", "unless-stopped",
+			"-p", fmt.Sprintf("%d:22", cfg.SSHPort),
 		)
 	}
 	if cfg.EnvFile != "" {
