@@ -9,12 +9,12 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
+
+	"github.com/ConspiracyOS/conos/internal/driverutil"
 )
 
 // Config holds the driver configuration loaded from environment variables.
@@ -22,10 +22,7 @@ type Config struct {
 	GatewayURL string
 	HookToken  string
 	HookPort   string
-	SSHHost    string
-	SSHPort    string
-	SSHUser    string
-	SSHKey     string
+	SSH        driverutil.SSHConfig
 }
 
 func loadConfig() Config {
@@ -33,10 +30,12 @@ func loadConfig() Config {
 		GatewayURL: os.Getenv("OPENCLAW_GATEWAY_URL"),
 		HookToken:  os.Getenv("OPENCLAW_HOOK_TOKEN"),
 		HookPort:   os.Getenv("OPENCLAW_HOOK_PORT"),
-		SSHHost:    os.Getenv("CONOS_SSH_HOST"),
-		SSHPort:    os.Getenv("CONOS_SSH_PORT"),
-		SSHUser:    os.Getenv("CONOS_SSH_USER"),
-		SSHKey:     os.Getenv("CONOS_SSH_KEY"),
+		SSH: driverutil.DefaultSSHConfig(
+			os.Getenv("CONOS_SSH_HOST"),
+			os.Getenv("CONOS_SSH_PORT"),
+			os.Getenv("CONOS_SSH_USER"),
+			os.Getenv("CONOS_SSH_KEY"),
+		),
 	}
 	if cfg.HookToken == "" {
 		log.Fatal("OPENCLAW_HOOK_TOKEN is required")
@@ -47,71 +46,10 @@ func loadConfig() Config {
 	if cfg.HookPort == "" {
 		cfg.HookPort = "3847"
 	}
-	if cfg.SSHHost == "" {
-		cfg.SSHHost = "localhost"
-	}
-	if cfg.SSHPort == "" {
-		cfg.SSHPort = "22"
-	}
-	if cfg.SSHUser == "" {
-		cfg.SSHUser = "root"
-	}
-	if cfg.SSHKey == "" {
-		cfg.SSHKey = os.ExpandEnv("$HOME/.ssh/id_ed25519")
+	if cfg.SSH.Key == "$HOME/.ssh/id_ed25519" {
+		cfg.SSH.Key = os.ExpandEnv(cfg.SSH.Key)
 	}
 	return cfg
-}
-
-// Executor abstracts command execution against the conspiracy instance.
-type Executor interface {
-	Run(cmd string) (string, error)
-}
-
-// SSHExecutor runs commands via SSH to the container.
-type SSHExecutor struct {
-	Config Config
-}
-
-func (e *SSHExecutor) Run(cmd string) (string, error) {
-	args := []string{
-		"-o", "StrictHostKeyChecking=accept-new",
-		"-o", "BatchMode=yes",
-		"-i", e.Config.SSHKey,
-		"-p", e.Config.SSHPort,
-		fmt.Sprintf("%s@%s", e.Config.SSHUser, e.Config.SSHHost),
-		cmd,
-	}
-	out, err := exec.Command("ssh", args...).CombinedOutput()
-	return strings.TrimSpace(string(out)), err
-}
-
-// responseTracker tracks which response files have already been posted.
-type responseTracker struct {
-	mu   sync.Mutex
-	seen map[string]bool
-}
-
-func newResponseTracker() *responseTracker {
-	return &responseTracker{seen: make(map[string]bool)}
-}
-
-func (rt *responseTracker) isNew(path string) bool {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	if rt.seen[path] {
-		return false
-	}
-	rt.seen[path] = true
-	if len(rt.seen) > 10000 {
-		rt.seen = make(map[string]bool)
-	}
-	return true
-}
-
-func (rt *responseTracker) count() int {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	return len(rt.seen)
 }
 
 // webhookRequest is the JSON body received from the OpenClaw Gateway.
@@ -129,11 +67,11 @@ type gatewayMessage struct {
 
 func main() {
 	cfg := loadConfig()
-	ssh := &SSHExecutor{Config: cfg}
-	tracker := newResponseTracker()
+	ssh := &driverutil.SSHExecutor{Config: cfg.SSH}
+	tracker := driverutil.NewResponseTracker()
 
 	// Seed the tracker with existing responses so we don't replay history
-	seedResponses(ssh, tracker)
+	driverutil.SeedResponses(ssh, tracker)
 
 	mux := http.NewServeMux()
 
@@ -171,7 +109,7 @@ func main() {
 			return
 		}
 
-		log.Printf("webhook from=%s channel=%s: %s", req.From, req.Channel, truncate(req.Text, 80))
+		log.Printf("webhook from=%s channel=%s: %s", req.From, req.Channel, driverutil.Truncate(req.Text, 80))
 
 		// Escape single quotes for shell safety
 		escaped := strings.ReplaceAll(req.Text, "'", "'\\''")
@@ -211,7 +149,7 @@ func main() {
 	// Start HTTP server
 	go func() {
 		log.Printf("openclaw driver listening on %s, gateway=%s, ssh=%s@%s:%s",
-			addr, cfg.GatewayURL, cfg.SSHUser, cfg.SSHHost, cfg.SSHPort)
+			addr, cfg.GatewayURL, cfg.SSH.User, cfg.SSH.Host, cfg.SSH.Port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("http server: %v", err)
 		}
@@ -232,23 +170,8 @@ func main() {
 
 // --- Response polling ---
 
-// seedResponses marks all existing response files as seen so we don't replay history.
-func seedResponses(exec Executor, tracker *responseTracker) {
-	out, err := exec.Run("ls /srv/conos/agents/*/outbox/*.response 2>/dev/null")
-	if err != nil || out == "" {
-		return
-	}
-	for _, path := range strings.Split(out, "\n") {
-		path = strings.TrimSpace(path)
-		if path != "" {
-			tracker.isNew(path) // marks as seen
-		}
-	}
-	log.Printf("seeded %d existing responses", tracker.count())
-}
-
 // pollResponses checks for new response files and pushes them to the OpenClaw Gateway.
-func pollResponses(ctx context.Context, cfg Config, ssh Executor, tracker *responseTracker) {
+func pollResponses(ctx context.Context, cfg Config, ssh driverutil.Executor, tracker *driverutil.ResponseTracker) {
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	for {
@@ -270,7 +193,7 @@ func pollResponses(ctx context.Context, cfg Config, ssh Executor, tracker *respo
 		// Parse === agent: file === blocks from conctl responses output
 		blocks := parseResponseBlocks(out)
 		for _, block := range blocks {
-			if !tracker.isNew(block.key) {
+			if !tracker.IsNew(block.key) {
 				continue
 			}
 
@@ -368,24 +291,4 @@ func sendToGateway(client *http.Client, cfg Config, text string) error {
 	}
 
 	return nil
-}
-
-// --- Helpers ---
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
-}
-
-// agentFromPath extracts agent name from /srv/conos/agents/<name>/outbox/...
-func agentFromPath(path string) string {
-	parts := strings.Split(path, "/")
-	for i, p := range parts {
-		if p == "agents" && i+1 < len(parts) {
-			return parts[i+1]
-		}
-	}
-	return "unknown"
 }

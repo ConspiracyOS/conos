@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/ConspiracyOS/conos/internal/driverutil"
 )
 
 // MockExecutor records commands and returns configurable responses.
@@ -24,6 +26,9 @@ func (m *MockExecutor) Run(cmd string) (string, error) {
 	}
 	return "", nil
 }
+
+// Verify MockExecutor satisfies the interface.
+var _ driverutil.Executor = (*MockExecutor)(nil)
 
 func TestSplitMessage_Short(t *testing.T) {
 	chunks := splitMessage("hello", 2000)
@@ -70,81 +75,6 @@ func TestSplitMessage_SplitsOnNewline(t *testing.T) {
 	// First chunk should end with a newline (split on newline boundary)
 	if !strings.HasSuffix(chunks[0], "\n") {
 		t.Error("expected first chunk to end at a newline boundary")
-	}
-}
-
-func TestAgentFromPath(t *testing.T) {
-	tests := []struct {
-		path string
-		want string
-	}{
-		{"/srv/conos/agents/concierge/outbox/001.response", "concierge"},
-		{"/srv/conos/agents/sysadmin/outbox/002.response", "sysadmin"},
-		{"/srv/conos/agents/researcher/outbox/file.response", "researcher"},
-		{"/some/other/path", "unknown"},
-		{"", "unknown"},
-	}
-	for _, tt := range tests {
-		got := agentFromPath(tt.path)
-		if got != tt.want {
-			t.Errorf("agentFromPath(%q) = %q, want %q", tt.path, got, tt.want)
-		}
-	}
-}
-
-func TestTruncate(t *testing.T) {
-	if truncate("hello", 10) != "hello" {
-		t.Error("short string should not be truncated")
-	}
-	if truncate("hello world", 5) != "hello..." {
-		t.Errorf("expected 'hello...', got %q", truncate("hello world", 5))
-	}
-}
-
-func TestSeedResponses(t *testing.T) {
-	mock := &MockExecutor{
-		Responses: map[string]string{
-			"ls /srv/conos/agents/*/outbox/*.response 2>/dev/null": "/srv/conos/agents/concierge/outbox/001.response\n/srv/conos/agents/sysadmin/outbox/002.response",
-		},
-	}
-	tracker := newResponseTracker()
-
-	seedResponses(mock, tracker)
-
-	if tracker.count() != 2 {
-		t.Errorf("expected 2 seeded responses, got %d", tracker.count())
-	}
-	// These should now be marked as seen
-	if tracker.isNew("/srv/conos/agents/concierge/outbox/001.response") {
-		t.Error("001.response should have been seeded as seen")
-	}
-}
-
-func TestSeedResponses_Empty(t *testing.T) {
-	mock := &MockExecutor{
-		Responses: map[string]string{},
-		Errors:    map[string]error{"ls /srv/conos/agents/*/outbox/*.response 2>/dev/null": fmt.Errorf("no matches")},
-	}
-	tracker := newResponseTracker()
-
-	seedResponses(mock, tracker)
-
-	if tracker.count() != 0 {
-		t.Errorf("expected 0 responses on error, got %d", tracker.count())
-	}
-}
-
-func TestResponseTracker(t *testing.T) {
-	tracker := newResponseTracker()
-
-	if !tracker.isNew("a") {
-		t.Error("first call should be new")
-	}
-	if tracker.isNew("a") {
-		t.Error("second call should not be new")
-	}
-	if tracker.count() != 1 {
-		t.Errorf("expected count 1, got %d", tracker.count())
 	}
 }
 

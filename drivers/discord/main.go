@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"os/signal"
 	"regexp"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ConspiracyOS/conos/internal/driverutil"
 	"github.com/bwmarrin/discordgo"
 )
 
@@ -53,10 +53,7 @@ var startTime = time.Now()
 type Config struct {
 	BotToken  string
 	ChannelID string // empty = DM mode
-	SSHHost   string
-	SSHPort   string
-	SSHUser   string
-	SSHKey    string
+	SSH       driverutil.SSHConfig
 	BaseURL   string // for artifact link minting
 }
 
@@ -72,83 +69,24 @@ func loadConfig() Config {
 	cfg := Config{
 		BotToken:  os.Getenv("DISCORD_BOT_TOKEN"),
 		ChannelID: os.Getenv("DISCORD_CHANNEL_ID"),
-		SSHHost:   envWithFallback("CONOS_SSH_HOST", "CON_SSH_HOST"),
-		SSHPort:   envWithFallback("CONOS_SSH_PORT", "CON_SSH_PORT"),
-		SSHUser:   envWithFallback("CONOS_SSH_USER", "CON_SSH_USER"),
-		SSHKey:    envWithFallback("CONOS_SSH_KEY", "CON_SSH_KEY"),
-		BaseURL:   os.Getenv("CONOS_BASE_URL"),
+		SSH: driverutil.DefaultSSHConfig(
+			envWithFallback("CONOS_SSH_HOST", "CON_SSH_HOST"),
+			envWithFallback("CONOS_SSH_PORT", "CON_SSH_PORT"),
+			envWithFallback("CONOS_SSH_USER", "CON_SSH_USER"),
+			envWithFallback("CONOS_SSH_KEY", "CON_SSH_KEY"),
+		),
+		BaseURL: os.Getenv("CONOS_BASE_URL"),
 	}
 	if cfg.BotToken == "" {
 		log.Fatal("DISCORD_BOT_TOKEN is required")
 	}
-	if cfg.SSHHost == "" {
-		cfg.SSHHost = "localhost"
-	}
-	if cfg.SSHPort == "" {
-		cfg.SSHPort = "22"
-	}
-	if cfg.SSHUser == "" {
-		cfg.SSHUser = "root"
-	}
-	if cfg.SSHKey == "" {
-		cfg.SSHKey = os.ExpandEnv("$HOME/.ssh/id_ed25519")
+	if cfg.SSH.Key == "$HOME/.ssh/id_ed25519" {
+		cfg.SSH.Key = os.ExpandEnv(cfg.SSH.Key)
 	}
 	if strings.ContainsRune(cfg.BaseURL, '\'') {
 		log.Fatalf("CONOS_BASE_URL contains invalid character (single quote)")
 	}
 	return cfg
-}
-
-// Executor abstracts command execution against the conspiracy instance.
-type Executor interface {
-	Run(cmd string) (string, error)
-}
-
-// SSHExecutor runs commands via SSH to the container.
-type SSHExecutor struct {
-	Config Config
-}
-
-func (e *SSHExecutor) Run(cmd string) (string, error) {
-	args := []string{
-		"-o", "StrictHostKeyChecking=accept-new",
-		"-o", "BatchMode=yes",
-		"-i", e.Config.SSHKey,
-		"-p", e.Config.SSHPort,
-		fmt.Sprintf("%s@%s", e.Config.SSHUser, e.Config.SSHHost),
-		cmd,
-	}
-	out, err := exec.Command("ssh", args...).CombinedOutput()
-	return strings.TrimSpace(string(out)), err
-}
-
-// responseTracker tracks which response files have already been posted.
-type responseTracker struct {
-	mu   sync.Mutex
-	seen map[string]bool
-}
-
-func newResponseTracker() *responseTracker {
-	return &responseTracker{seen: make(map[string]bool)}
-}
-
-func (rt *responseTracker) isNew(path string) bool {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	if rt.seen[path] {
-		return false
-	}
-	rt.seen[path] = true
-	if len(rt.seen) > 10000 {
-		rt.seen = make(map[string]bool)
-	}
-	return true
-}
-
-func (rt *responseTracker) count() int {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	return len(rt.seen)
 }
 
 // dmChannels tracks active DM channel IDs for response delivery.
@@ -241,12 +179,12 @@ func main() {
 		dg.Identify.Intents |= discordgo.IntentsGuildMessages | discordgo.IntentsMessageContent
 	}
 
-	exec := &SSHExecutor{Config: cfg}
-	tracker := newResponseTracker()
+	exec := &driverutil.SSHExecutor{Config: cfg.SSH}
+	tracker := driverutil.NewResponseTracker()
 	dms := newDMChannels()
 
 	// Seed the tracker with existing responses so we only post new ones
-	seedResponses(exec, tracker)
+	driverutil.SeedResponses(exec, tracker)
 
 	// Message handler: Discord → conspiracy inbox
 	dg.AddHandler(func(s *discordgo.Session, m *discordgo.MessageCreate) {
@@ -298,7 +236,7 @@ func main() {
 
 		s.MessageReactionAdd(m.ChannelID, m.ID, "\u2705") // check mark
 		startTyping(s, m.ChannelID)
-		log.Printf("task from %s: %s", m.Author.Username, truncate(message, 80))
+		log.Printf("task from %s: %s", m.Author.Username, driverutil.Truncate(message, 80))
 	})
 
 	// Interaction handler: slash commands
@@ -352,7 +290,7 @@ func main() {
 		mode = fmt.Sprintf("channel %s", cfg.ChannelID)
 	}
 	log.Printf("discord driver started (%s mode), polling %s@%s:%s",
-		mode, cfg.SSHUser, cfg.SSHHost, cfg.SSHPort)
+		mode, cfg.SSH.User, cfg.SSH.Host, cfg.SSH.Port)
 
 	// Start response poller
 	go pollResponses(dg, cfg, exec, tracker, dms)
@@ -382,7 +320,7 @@ func respond(s *discordgo.Session, i *discordgo.InteractionCreate, content strin
 	}
 }
 
-func handleStatus(s *discordgo.Session, i *discordgo.InteractionCreate, exec Executor) {
+func handleStatus(s *discordgo.Session, i *discordgo.InteractionCreate, exec driverutil.Executor) {
 	out, err := exec.Run("conctl status")
 	if err != nil {
 		respond(s, i, fmt.Sprintf("SSH failed: %v\n%s", err, out))
@@ -391,7 +329,7 @@ func handleStatus(s *discordgo.Session, i *discordgo.InteractionCreate, exec Exe
 	respond(s, i, fmt.Sprintf("```\n%s\n```", out))
 }
 
-func handleClear(s *discordgo.Session, i *discordgo.InteractionCreate, exec Executor) {
+func handleClear(s *discordgo.Session, i *discordgo.InteractionCreate, exec driverutil.Executor) {
 	out, err := exec.Run("conctl clear-sessions concierge")
 	if err != nil {
 		respond(s, i, fmt.Sprintf("Failed to clear session: %v\n%s", err, out))
@@ -401,7 +339,7 @@ func handleClear(s *discordgo.Session, i *discordgo.InteractionCreate, exec Exec
 	log.Printf("session cleared by %s", interactionUser(i))
 }
 
-func handleLogs(s *discordgo.Session, i *discordgo.InteractionCreate, exec Executor, opts []*discordgo.ApplicationCommandInteractionDataOption) {
+func handleLogs(s *discordgo.Session, i *discordgo.InteractionCreate, exec driverutil.Executor, opts []*discordgo.ApplicationCommandInteractionDataOption) {
 	count := 20
 	for _, opt := range opts {
 		if opt.Name == "count" {
@@ -424,7 +362,7 @@ func handleLogs(s *discordgo.Session, i *discordgo.InteractionCreate, exec Execu
 	respond(s, i, fmt.Sprintf("```\n%s\n```", out))
 }
 
-func handleResponses(s *discordgo.Session, i *discordgo.InteractionCreate, exec Executor) {
+func handleResponses(s *discordgo.Session, i *discordgo.InteractionCreate, exec driverutil.Executor) {
 	out, err := exec.Run("conctl responses")
 	if err != nil {
 		respond(s, i, fmt.Sprintf("SSH failed: %v\n%s", err, out))
@@ -437,7 +375,7 @@ func handleResponses(s *discordgo.Session, i *discordgo.InteractionCreate, exec 
 	respond(s, i, out)
 }
 
-func handleHistory(s *discordgo.Session, i *discordgo.InteractionCreate, exec Executor, _ []*discordgo.ApplicationCommandInteractionDataOption) {
+func handleHistory(s *discordgo.Session, i *discordgo.InteractionCreate, exec driverutil.Executor, _ []*discordgo.ApplicationCommandInteractionDataOption) {
 	// count option ignored — conctl responses shows latest from each agent
 	out, err := exec.Run("conctl responses")
 	if err != nil || out == "" {
@@ -447,7 +385,7 @@ func handleHistory(s *discordgo.Session, i *discordgo.InteractionCreate, exec Ex
 	respond(s, i, out)
 }
 
-func handleDebug(s *discordgo.Session, i *discordgo.InteractionCreate, cfg Config, exec Executor, tracker *responseTracker, dms *dmChannels) {
+func handleDebug(s *discordgo.Session, i *discordgo.InteractionCreate, cfg Config, exec driverutil.Executor, tracker *driverutil.ResponseTracker, dms *dmChannels) {
 	mode := "DM"
 	if cfg.ChannelID != "" {
 		mode = fmt.Sprintf("channel %s", cfg.ChannelID)
@@ -472,10 +410,10 @@ func handleDebug(s *discordgo.Session, i *discordgo.InteractionCreate, cfg Confi
 	lines := []string{
 		"```",
 		fmt.Sprintf("Mode:       %s", mode),
-		fmt.Sprintf("Target:     %s@%s:%s", cfg.SSHUser, cfg.SSHHost, cfg.SSHPort),
+		fmt.Sprintf("Target:     %s@%s:%s", cfg.SSH.User, cfg.SSH.Host, cfg.SSH.Port),
 		fmt.Sprintf("SSH:        %s", sshStatus),
 		fmt.Sprintf("Uptime:     %s", uptime),
-		fmt.Sprintf("Seen:       %d responses tracked", tracker.count()),
+		fmt.Sprintf("Seen:       %d responses tracked", tracker.Count()),
 		fmt.Sprintf("DM chans:   %d active", dms.count()),
 	}
 	if pending != "" {
@@ -500,23 +438,8 @@ func interactionUser(i *discordgo.InteractionCreate) string {
 
 // --- Response polling ---
 
-// seedResponses marks all existing response files as seen so we don't replay history.
-func seedResponses(exec Executor, tracker *responseTracker) {
-	out, err := exec.Run("ls /srv/conos/agents/*/outbox/*.response 2>/dev/null")
-	if err != nil || out == "" {
-		return
-	}
-	for _, path := range strings.Split(out, "\n") {
-		path = strings.TrimSpace(path)
-		if path != "" {
-			tracker.isNew(path) // marks as seen
-		}
-	}
-	log.Printf("seeded %d existing responses", tracker.count())
-}
-
 // pollResponses checks for new response files and posts them to Discord.
-func pollResponses(dg *discordgo.Session, cfg Config, exec Executor, tracker *responseTracker, dms *dmChannels) {
+func pollResponses(dg *discordgo.Session, cfg Config, exec driverutil.Executor, tracker *driverutil.ResponseTracker, dms *dmChannels) {
 	for {
 		time.Sleep(5 * time.Second)
 
@@ -527,12 +450,12 @@ func pollResponses(dg *discordgo.Session, cfg Config, exec Executor, tracker *re
 
 		for _, path := range strings.Split(out, "\n") {
 			path = strings.TrimSpace(path)
-			if path == "" || !tracker.isNew(path) {
+			if path == "" || !tracker.IsNew(path) {
 				continue
 			}
 
 			// Extract agent name from path: /srv/conos/agents/<name>/outbox/...
-			agent := agentFromPath(path)
+			agent := driverutil.AgentFromPath(path)
 
 			content, err := exec.Run(fmt.Sprintf("cat '%s'", path))
 			if err != nil {
@@ -591,7 +514,7 @@ type artifactLinkResponse struct {
 
 // resolveArtifactLinks finds artifact references in text and replaces them
 // with signed URLs by calling `conctl artifact link <id>` via SSH.
-func resolveArtifactLinks(text string, baseURL string, exec Executor) string {
+func resolveArtifactLinks(text string, baseURL string, exec driverutil.Executor) string {
 	matches := artifactPattern.FindAllStringSubmatchIndex(text, -1)
 	if len(matches) == 0 {
 		return text
@@ -662,23 +585,6 @@ func splitMessage(content string, limit int) []string {
 	return chunks
 }
 
-// agentFromPath extracts agent name from /srv/conos/agents/<name>/outbox/...
-func agentFromPath(path string) string {
-	parts := strings.Split(path, "/")
-	for i, p := range parts {
-		if p == "agents" && i+1 < len(parts) {
-			return parts[i+1]
-		}
-	}
-	return "unknown"
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
-}
 
 // secretPatterns matches API key formats that must not be forwarded to Discord.
 var secretPatterns = []*regexp.Regexp{

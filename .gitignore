@@ -1,3 +1,6 @@
 /conos
+/discord
 conos-linux-*
 drivers/*/.env
+drivers/*/openclaw
+drivers/*/discord
