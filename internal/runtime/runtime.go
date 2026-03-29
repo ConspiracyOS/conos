@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 )
 
 // ContainerConfig holds settings for container lifecycle operations.
@@ -13,10 +14,18 @@ type ContainerConfig struct {
 	Image   string // image name
 	EnvFile string // path to env file (empty = omit)
 	SSHPort int    // host port to map to container port 22 (default: 2222)
+	Mounts  []string
 }
 
 func needsSystemdFlags(runtime string) bool {
 	return runtime == "docker" || runtime == "podman"
+}
+
+func sshPortOrDefault(port int) int {
+	if port > 0 {
+		return port
+	}
+	return DefaultSSHPort
 }
 
 // BuildStartArgs returns the argument list for the start command.
@@ -29,8 +38,14 @@ func BuildStartArgs(cfg ContainerConfig) []string {
 			"--cgroupns=host",
 			"-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
 			"--restart", "unless-stopped",
-			"-p", fmt.Sprintf("%d:22", cfg.SSHPort),
+			"-p", fmt.Sprintf("%d:22", sshPortOrDefault(cfg.SSHPort)),
 		)
+	}
+	for _, mount := range cfg.Mounts {
+		if strings.TrimSpace(mount) == "" {
+			continue
+		}
+		args = append(args, "-v", mount)
 	}
 	if cfg.EnvFile != "" {
 		args = append(args, "--env-file", cfg.EnvFile)

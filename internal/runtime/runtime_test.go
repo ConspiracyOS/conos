@@ -13,6 +13,7 @@ func TestBuildStartArgs(t *testing.T) {
 		Image:   "conos",
 		EnvFile: "srv/dev/container.env",
 		SSHPort: 2222,
+		Mounts:  []string{"/host/swarm:/Users/vegard/Swarm:ro"},
 	}
 	args := runtime.BuildStartArgs(cfg)
 	if args[0] != "docker" {
@@ -36,6 +37,10 @@ func TestBuildStartArgs(t *testing.T) {
 	if pIdx == -1 || args[pIdx+1] != "2222:22" {
 		t.Fatalf("expected -p 2222:22 in args: %v", args)
 	}
+	mountIdx := indexOf(args, "/host/swarm:/Users/vegard/Swarm:ro")
+	if mountIdx == -1 || mountIdx == 0 || args[mountIdx-1] != "-v" {
+		t.Fatalf("expected bind mount in args: %v", args)
+	}
 }
 
 func TestBuildStartArgs_NoEnvFile(t *testing.T) {
@@ -52,6 +57,20 @@ func TestBuildStartArgs_NoEnvFile(t *testing.T) {
 		if a == "--privileged" || a == "--cgroupns=host" {
 			t.Fatalf("systemd flags should not be used for runtime=container: %v", args)
 		}
+	}
+}
+
+func TestBuildStartArgs_DefaultSSHPortForDocker(t *testing.T) {
+	cfg := runtime.ContainerConfig{
+		Runtime: "docker",
+		Name:    "cos",
+		Image:   "cos",
+	}
+
+	args := runtime.BuildStartArgs(cfg)
+	pIdx := indexOf(args, "-p")
+	if pIdx == -1 || args[pIdx+1] != "2222:22" {
+		t.Fatalf("expected default -p 2222:22 in args: %v", args)
 	}
 }
 

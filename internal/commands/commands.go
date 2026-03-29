@@ -29,18 +29,64 @@ func AgentList(r runner.Runner) (string, error) {
 	return r.Exec("conctl status")
 }
 
+// TaskMeta holds optional metadata fields for task submission.
+type TaskMeta struct {
+	ThreadID    string
+	From        string
+	Channel     string
+	Transport   string
+	Source      string
+	ParentRunID string
+}
+
+func (m TaskMeta) flags() string {
+	var parts []string
+	if m.ThreadID != "" {
+		parts = append(parts, "--thread-id '"+shellEscape(m.ThreadID)+"'")
+	}
+	if m.From != "" {
+		parts = append(parts, "--from '"+shellEscape(m.From)+"'")
+	}
+	if m.Channel != "" {
+		parts = append(parts, "--channel '"+shellEscape(m.Channel)+"'")
+	}
+	if m.Transport != "" {
+		parts = append(parts, "--transport '"+shellEscape(m.Transport)+"'")
+	}
+	if m.Source != "" {
+		parts = append(parts, "--source '"+shellEscape(m.Source)+"'")
+	}
+	if m.ParentRunID != "" {
+		parts = append(parts, "--parent-run-id '"+shellEscape(m.ParentRunID)+"'")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " " + strings.Join(parts, " ")
+}
+
 // AgentSend sends a task to the concierge (outer inbox).
 func AgentSend(r runner.Runner, task string) error {
-	_, err := r.Exec("conctl task '" + shellEscape(task) + "'")
+	return AgentSendWithMeta(r, task, TaskMeta{})
+}
+
+// AgentSendWithMeta sends a task to the concierge with metadata.
+func AgentSendWithMeta(r runner.Runner, task string, meta TaskMeta) error {
+	_, err := r.Exec("conctl task" + meta.flags() + " '" + shellEscape(task) + "'")
 	return err
 }
 
 // AgentSendTo sends a task directly to a named agent's inbox.
 func AgentSendTo(r runner.Runner, agentName, task string) error {
+	return AgentSendToWithMeta(r, agentName, task, TaskMeta{})
+}
+
+// AgentSendToWithMeta sends a task to a named agent with metadata.
+func AgentSendToWithMeta(r runner.Runner, agentName, task string, meta TaskMeta) error {
 	if err := checkAgentName(agentName); err != nil {
 		return err
 	}
-	_, err := r.Exec("conctl task --agent " + agentName + " '" + shellEscape(task) + "'")
+	_, err := r.Exec("conctl task --agent " + agentName + meta.flags() + " '" + shellEscape(task) + "'")
 	return err
 }
 
@@ -90,6 +136,10 @@ func BuildScpArgs(host, localPath string) []string {
 	return []string{"scp", localPath, host + ":/etc/conos/conos.toml"}
 }
 
+func BuildConfigFixupCmd() string {
+	return "chown root:agents /etc/conos/conos.toml && chmod 640 /etc/conos/conos.toml"
+}
+
 // ConfigApply copies the local conos.toml to the instance and runs bootstrap.
 func ConfigApply(host, localPath string) error {
 	// Step 1: clear immutable bit so scp can overwrite
@@ -107,7 +157,15 @@ func ConfigApply(host, localPath string) error {
 		return fmt.Errorf("scp failed: %w", err)
 	}
 
-	// Step 3: conctl bootstrap (re-applies immutable bit as its last step)
+	// Step 3: ensure agents can read the config before bootstrap writes units.
+	fixup := exec.Command("ssh", host, BuildConfigFixupCmd())
+	fixup.Stdout = os.Stdout
+	fixup.Stderr = os.Stderr
+	if err := fixup.Run(); err != nil {
+		return fmt.Errorf("config permissions fixup failed: %w", err)
+	}
+
+	// Step 4: conctl bootstrap (re-applies immutable bit as its last step)
 	bootstrap := exec.Command("ssh", host, "conctl bootstrap")
 	bootstrap.Stdout = os.Stdout
 	bootstrap.Stderr = os.Stderr

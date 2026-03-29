@@ -142,3 +142,10 @@ func TestBuildScpArgs(t *testing.T) {
 		t.Fatalf("unexpected remote: %q (args: %v)", remote, args)
 	}
 }
+
+func TestBuildConfigFixupCmd(t *testing.T) {
+	cmd := commands.BuildConfigFixupCmd()
+	if cmd != "chown root:agents /etc/conos/conos.toml && chmod 640 /etc/conos/conos.toml" {
+		t.Fatalf("unexpected fixup cmd: %q", cmd)
+	}
+}

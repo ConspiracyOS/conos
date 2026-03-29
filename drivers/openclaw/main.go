@@ -65,6 +65,30 @@ type gatewayMessage struct {
 	Text string `json:"text"`
 }
 
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
+func buildTaskCommand(req webhookRequest) string {
+	args := []string{"conctl", "task"}
+	if req.ThreadID != "" {
+		args = append(args, "--thread-id", req.ThreadID)
+	}
+	if req.From != "" {
+		args = append(args, "--from", req.From)
+	}
+	if req.Channel != "" {
+		args = append(args, "--channel", req.Channel)
+	}
+	args = append(args, "--transport", "openclaw", "--source", "openclaw", req.Text)
+
+	quoted := make([]string, 0, len(args))
+	for _, arg := range args {
+		quoted = append(quoted, shellQuote(arg))
+	}
+	return strings.Join(quoted, " ")
+}
+
 func main() {
 	cfg := loadConfig()
 	ssh := &driverutil.SSHExecutor{Config: cfg.SSH}
@@ -111,9 +135,7 @@ func main() {
 
 		log.Printf("webhook from=%s channel=%s: %s", req.From, req.Channel, driverutil.Truncate(req.Text, 80))
 
-		// Escape single quotes for shell safety
-		escaped := strings.ReplaceAll(req.Text, "'", "'\\''")
-		cmd := fmt.Sprintf("conctl task '%s'", escaped)
+		cmd := buildTaskCommand(req)
 
 		_, err = ssh.Run(cmd)
 		if err != nil {

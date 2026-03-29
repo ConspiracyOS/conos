@@ -316,8 +316,7 @@ func buildWebhookMux(cfg Config, ssh driverutil.Executor) *http.ServeMux {
 			return
 		}
 
-		escaped := strings.ReplaceAll(req.Text, "'", "'\\''")
-		cmd := fmt.Sprintf("conctl task '%s'", escaped)
+		cmd := buildTaskCommand(req)
 
 		_, err = ssh.Run(cmd)
 		if err != nil {
@@ -416,8 +415,9 @@ func TestWebhookHandler(t *testing.T) {
 		if len(mock.calls) != 1 {
 			t.Fatalf("expected 1 SSH call, got %d", len(mock.calls))
 		}
-		if !contains(mock.calls[0], "hello via query") {
-			t.Errorf("SSH command = %q, want it to contain the message text", mock.calls[0])
+		want := buildTaskCommand(webhookRequest{Text: "hello via query"})
+		if mock.calls[0] != want {
+			t.Errorf("SSH command = %q, want %q", mock.calls[0], want)
 		}
 	})
 
@@ -466,7 +466,7 @@ func TestWebhookHandler(t *testing.T) {
 		defer srv.Close()
 
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/webhook",
-			strings.NewReader(`{"text":"deploy the app","from":"user1","channel":"general"}`))
+			strings.NewReader(`{"text":"deploy the app","from":"user1","channel":"general","threadId":"thread-123"}`))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-Hook-Token", "secret-token")
 		resp, err := http.DefaultClient.Do(req)
@@ -492,7 +492,12 @@ func TestWebhookHandler(t *testing.T) {
 		if len(mock.calls) != 1 {
 			t.Fatalf("expected 1 SSH call, got %d", len(mock.calls))
 		}
-		want := "conctl task 'deploy the app'"
+		want := buildTaskCommand(webhookRequest{
+			Text:     "deploy the app",
+			From:     "user1",
+			Channel:  "general",
+			ThreadID: "thread-123",
+		})
 		if mock.calls[0] != want {
 			t.Errorf("SSH command = %q, want %q", mock.calls[0], want)
 		}
@@ -521,8 +526,7 @@ func TestWebhookHandler(t *testing.T) {
 		if len(mock.calls) != 1 {
 			t.Fatalf("expected 1 SSH call, got %d", len(mock.calls))
 		}
-		// Single quote should be escaped as '\''
-		want := "conctl task 'it'\\''s a test'"
+		want := buildTaskCommand(webhookRequest{Text: "it's a test"})
 		if mock.calls[0] != want {
 			t.Errorf("SSH command = %q, want %q", mock.calls[0], want)
 		}
